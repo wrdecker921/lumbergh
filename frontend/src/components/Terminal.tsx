@@ -102,6 +102,16 @@ export default memo(function Terminal({
   // Track terminal focus (for click shield on desktop)
   const [hasFocus, setHasFocus] = useState(false)
 
+  // Selection-copy (desktop): agent TUIs redraw constantly, and each incoming
+  // write clears an in-progress xterm selection. While the left button is down
+  // we hold output in pendingOutputRef so the screen stays still; on release we
+  // copy the selection to the clipboard and flush.
+  const selectingRef = useRef(false)
+  const pendingOutputRef = useRef<string[]>([])
+  const selectionSafetyRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [copied, setCopied] = useState(false)
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // Detect touch device (hide scroll controls on desktop)
   const [isTouchDevice] = useState(() => {
     if (typeof window === 'undefined') return false
@@ -159,6 +169,10 @@ export default memo(function Terminal({
 
   const handleData = useCallback(
     (data: string) => {
+      if (selectingRef.current) {
+        pendingOutputRef.current.push(data)
+        return
+      }
       if (debugEnabledRef.current) {
         const now = performance.now()
         const info = debugInfoRef.current
@@ -528,6 +542,142 @@ export default memo(function Terminal({
     const isMove = (t: string) => t === 'mousemove' || t === 'pointermove'
     const isUp = (t: string) => t === 'mouseup' || t === 'pointerup'
 
+    const showCopiedToast = () => {
+      setCopied(true)
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
+      copiedTimerRef.current = setTimeout(() => setCopied(false), 1500)
+    }
+
+    // execCommand path for non-secure contexts (plain http over LAN), where
+    // navigator.clipboard is unavailable. Must run inside the mouseup gesture.
+    const fallbackCopy = (text: string): boolean => {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.focus()
+      ta.select()
+      let ok = false
+      try {
+        ok = document.execCommand('copy')
+      } catch {
+        ok = false
+      }
+      document.body.removeChild(ta)
+      termRef.current?.focus()
+      return ok
+    }
+
+    const copySelection = (text: string) => {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard
+          .writeText(text)
+          .then(() => showCopiedToast())
+          .catch(() => {
+            if (fallbackCopy(text)) showCopiedToast()
+          })
+      } else if (fallbackCopy(text)) {
+        showCopiedToast()
+      }
+    }
+
+    // Strip the gutter: the MOST COMMON indent, not the minimum — bullet
+    // lines ("● ...") sit at column 0, which would pin a min-based dedent to
+    // zero and leave every other paragraph indented. Each line loses at most
+    // the gutter, so deeper indentation (code blocks) keeps its structure.
+    const stripGutter = (lines: string[]): string[] => {
+      const indentOf = (l: string) => l.length - l.trimStart().length
+      const counts = new Map<number, number>()
+      for (const l of lines) {
+        if (!l.trim()) continue
+        counts.set(indentOf(l), (counts.get(indentOf(l)) ?? 0) + 1)
+      }
+      let gutter = 0
+      let best = 0
+      for (const [n, c] of counts) {
+        if (c > best || (c === best && n < gutter)) {
+          gutter = n
+          best = c
+        }
+      }
+      return lines.map((l) => l.slice(Math.min(indentOf(l), gutter)))
+    }
+
+    // Agent TUIs hard-wrap their output to the pane width, so wrapped rows
+    // reach xterm as real newlines plus a gutter indent — copying them raw
+    // gives mid-sentence line breaks. Reconstruct paragraphs via the word-wrap
+    // invariant: row B is a continuation of row A iff B's first word could not
+    // have fit on A. Then strip the indent common to every line (the gutter).
+    // Ambiguous by nature (a row that coincidentally fills the width looks
+    // wrapped), hence the ctrl-release raw-copy escape hatch at the call site.
+    const reflowSelection = (text: string): string => {
+      // Agent TUIs wrap a column or two short of the pane width, and JS string
+      // length under-counts ambiguous-width chars (em dashes, curly quotes) by
+      // a column each — measured live, wrapped rows end up to ~4 columns shy
+      // of pane_width. Without this slack, a wrapped row followed by a short
+      // word ("an", "to") fails the fit check and keeps its line break.
+      const cols = (termRef.current?.cols ?? 80) - 4
+      const out: string[] = []
+      let lastRowLen = 0
+      for (const raw of text.split('\n')) {
+        const line = raw.replace(/\s+$/, '')
+        const stripped = line.replace(/^\s+/, '')
+        const firstWord = stripped.split(/\s/, 1)[0] ?? ''
+        if (out.length && stripped && lastRowLen + 1 + firstWord.length > cols) {
+          out[out.length - 1] += ' ' + stripped
+        } else {
+          out.push(line)
+        }
+        // The wrap check needs the length of the last physical ROW, not the
+        // accumulated joined line, or paragraph ends would swallow the next
+        // paragraph's first line.
+        lastRowLen = line.length
+      }
+      return stripGutter(out).join('\n')
+    }
+
+    const flushPendingOutput = () => {
+      const pending = pendingOutputRef.current
+      if (pending.length) {
+        pendingOutputRef.current = []
+        termRef.current?.write(pending.join(''))
+      }
+    }
+
+    // clickCount comes from mouseup's e.detail (2 = double-click, 3 = triple).
+    // Copy only for real drags or multi-clicks: a plain click can transiently
+    // shift-extend a previous selection (we fake shiftKey on mousedown), and
+    // copying that would clobber the clipboard.
+    const endSelectionHold = (clickCount = 1, rawCopy = false) => {
+      if (!selectingRef.current) return
+      selectingRef.current = false
+      if (selectionSafetyRef.current) {
+        clearTimeout(selectionSafetyRef.current)
+        selectionSafetyRef.current = null
+      }
+      const selection = termRef.current?.getSelection() ?? ''
+      if (selection && (!isClick || clickCount >= 2)) {
+        copySelection(rawCopy ? selection : reflowSelection(selection))
+      }
+      flushPendingOutput()
+    }
+
+    const beginSelectionHold = () => {
+      if (selectingRef.current) return
+      selectingRef.current = true
+      if (selectionSafetyRef.current) clearTimeout(selectionSafetyRef.current)
+      // Never hold output indefinitely (e.g. mouseup swallowed by the OS)
+      selectionSafetyRef.current = setTimeout(endSelectionHold, 5000)
+    }
+
+    // mouseup can land outside the terminal element mid-drag, so the hold is
+    // released from a window-level listener (capture phase, before xterm's
+    // own handlers and before the click-replay in onMouseEvent). mouseup, not
+    // pointerup: only MouseEvent.detail carries the click count.
+    // Ctrl held on release = copy raw, skipping the paragraph reflow.
+    const onWindowUp = (e: MouseEvent) => endSelectionHold(e.detail, e.ctrlKey)
+
     const onMouseEvent = (e: MouseEvent | PointerEvent) => {
       if (isTouch || bypass) return
       if (e.button === 0) {
@@ -535,6 +685,7 @@ export default memo(function Terminal({
           clickStartX = e.clientX
           clickStartY = e.clientY
           isClick = true
+          beginSelectionHold()
         } else if (isMove(e.type) && isClick) {
           const dx = e.clientX - clickStartX
           const dy = e.clientY - clickStartY
@@ -663,6 +814,7 @@ export default memo(function Terminal({
     ] as const
     if (el && !isTouch) {
       for (const evt of interceptEvents) el.addEventListener(evt, onMouseEvent, true)
+      window.addEventListener('mouseup', onWindowUp, true)
     }
     // Touch-drag scrolling (touch devices only). touchmove must be non-passive
     // so we can preventDefault once the gesture is recognized as a scroll.
@@ -679,6 +831,19 @@ export default memo(function Terminal({
       term.element?.removeEventListener('focusout', handleBlur)
       if (el && !isTouch) {
         for (const evt of interceptEvents) el.removeEventListener(evt, onMouseEvent, true)
+        window.removeEventListener('mouseup', onWindowUp, true)
+      }
+      // Drop any output held for an in-flight selection; the terminal is being
+      // disposed, so the next session attach repaints from a fresh snapshot.
+      selectingRef.current = false
+      pendingOutputRef.current = []
+      if (selectionSafetyRef.current) {
+        clearTimeout(selectionSafetyRef.current)
+        selectionSafetyRef.current = null
+      }
+      if (copiedTimerRef.current) {
+        clearTimeout(copiedTimerRef.current)
+        copiedTimerRef.current = null
       }
       if (el && isTouch) {
         el.removeEventListener('touchstart', onTouchStart)
@@ -887,6 +1052,12 @@ export default memo(function Terminal({
           }`}
           title={isConnected ? 'Connected' : 'Disconnected'}
         />
+        {/* Selection copied toast */}
+        {copied && (
+          <div className="absolute top-1 right-5 z-20 px-2 py-0.5 bg-success/90 text-white text-xs rounded shadow pointer-events-none">
+            Copied
+          </div>
+        )}
         {debugEnabledRef.current && (
           <div className="absolute top-1 left-1 z-20 px-2 py-1 bg-black/80 text-[10px] font-mono text-yellow-200 rounded pointer-events-none leading-tight">
             <div>
