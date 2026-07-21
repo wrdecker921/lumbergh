@@ -660,6 +660,11 @@ export default memo(function Terminal({
       if (selection && (!isClick || clickCount >= 2)) {
         copySelection(rawCopy ? selection : reflowSelection(selection))
       }
+      // Always drop the selection afterwards: our faked shift-clicks mean
+      // xterm never clears one on its own, so a stale selection would live
+      // forever and get re-copied on the next drag, clobbering whatever the
+      // user copied elsewhere in the meantime.
+      termRef.current?.clearSelection()
       flushPendingOutput()
     }
 
