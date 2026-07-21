@@ -471,9 +471,18 @@ export default memo(function Terminal({
     // xterm.js's _keyPress handler from also sending \r (carriage return/submit).
     // When the custom handler blocks only keydown, xterm.js doesn't call preventDefault(),
     // so the browser fires keypress which leaks through and sends \r to the terminal.
+    // Keys xterm must NOT process:
+    // - Ctrl+[ / Ctrl+] cycles sessions — the window handler deals with it.
+    // - Ctrl+V must paste the VIEWER's clipboard via the browser's native
+    //   paste. Left to xterm, it transmits a literal ^V, which Claude Code's
+    //   TUI treats as paste-from-the-HOST's-clipboard — stale/wrong content
+    //   when the dashboard is viewed from a different machine.
+    const isBrowserHandledKey = (event: KeyboardEvent): boolean =>
+      (event.ctrlKey && (event.key === '[' || event.key === ']')) ||
+      (event.ctrlKey && !event.shiftKey && !event.altKey && event.code === 'KeyV')
+
     term.attachCustomKeyEventHandler((event) => {
-      // Ctrl+[ / Ctrl+] cycles sessions — let the window handler deal with it
-      if (event.ctrlKey && (event.key === '[' || event.key === ']')) {
+      if (isBrowserHandledKey(event)) {
         return false
       }
       if (event.key === 'Enter' && event.shiftKey) {
