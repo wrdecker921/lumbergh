@@ -750,6 +750,10 @@ export default memo(function Terminal({
       // reports empty mid-drag, but term.getSelection() (with a DOM-selection
       // fallback) is populated by the time the button is released.
       const selText = term.getSelection() || (window.getSelection()?.toString() ?? '')
+      // Drop the selection once read: our faked shift-clicks mean xterm never
+      // clears one on its own, so a stale selection would be shift-EXTENDED by
+      // the next drag and re-copied along with it, clobbering the clipboard.
+      term.clearSelection()
       if (selText) {
         copyToClipboard(rawCopy ? selText : reflowSelection(selText))
           .then(() => {
