@@ -7,6 +7,7 @@ import '@xterm/xterm/css/xterm.css'
 import { useTerminalSocket } from '../hooks/useTerminalSocket'
 import type { PaneState } from '../hooks/useTerminalSocket'
 import { createWheelPager } from '../utils/wheelScroll'
+import { reflowCopy } from '../utils/reflowCopy'
 import { exitsScrollMode, isPasteChord, isSessionCycleChord } from '../utils/terminalChords'
 import { getApiBase } from '../config'
 import { useTheme } from '../hooks/useTheme'
@@ -677,61 +678,6 @@ export default memo(function Terminal({
     // flushed on thaw. We freeze only once a real drag is detected (never on a
     // plain click) and thaw on a window-level pointerup/mouseup, so a click can
     // never leave output stuck and a release outside the terminal still thaws.
-    // Strip the gutter: the MOST COMMON indent, not the minimum — bullet
-    // lines ("● ...") sit at column 0, which would pin a min-based dedent to
-    // zero and leave every other paragraph indented. Each line loses at most
-    // the gutter, so deeper indentation (code blocks) keeps its structure.
-    const stripGutter = (lines: string[]): string[] => {
-      const indentOf = (l: string) => l.length - l.trimStart().length
-      const counts = new Map<number, number>()
-      for (const l of lines) {
-        if (!l.trim()) continue
-        counts.set(indentOf(l), (counts.get(indentOf(l)) ?? 0) + 1)
-      }
-      let gutter = 0
-      let best = 0
-      for (const [n, c] of counts) {
-        if (c > best || (c === best && n < gutter)) {
-          gutter = n
-          best = c
-        }
-      }
-      return lines.map((l) => l.slice(Math.min(indentOf(l), gutter)))
-    }
-
-    // Agent TUIs hard-wrap their output to the pane width, so wrapped rows
-    // reach xterm as real newlines plus a gutter indent — copying them raw
-    // gives mid-sentence line breaks. Reconstruct paragraphs via the word-wrap
-    // invariant: row B is a continuation of row A iff B's first word could not
-    // have fit on A. Then strip the indent common to every line (the gutter).
-    // Ambiguous by nature (a row that coincidentally fills the width looks
-    // wrapped), hence the ctrl-release raw-copy escape hatch at the call site.
-    const reflowSelection = (text: string): string => {
-      // Agent TUIs wrap a column or two short of the pane width, and JS string
-      // length under-counts ambiguous-width chars (em dashes, curly quotes) by
-      // a column each — measured live, wrapped rows end up to ~4 columns shy
-      // of pane_width. Without this slack, a wrapped row followed by a short
-      // word ("an", "to") fails the fit check and keeps its line break.
-      const cols = term.cols - 4
-      const out: string[] = []
-      let lastRowLen = 0
-      for (const raw of text.split('\n')) {
-        const line = raw.replace(/\s+$/, '')
-        const stripped = line.replace(/^\s+/, '')
-        const firstWord = stripped.split(/\s/, 1)[0] ?? ''
-        if (out.length && stripped && lastRowLen + 1 + firstWord.length > cols) {
-          out[out.length - 1] += ' ' + stripped
-        } else {
-          out.push(line)
-        }
-        // The wrap check needs the length of the last physical ROW, not the
-        // accumulated joined line, or paragraph ends would swallow the next
-        // paragraph's first line.
-        lastRowLen = line.length
-      }
-      return stripGutter(out).join('\n')
-    }
-
     let freezeTimer: ReturnType<typeof setTimeout> | null = null
     const beginFreeze = () => {
       if (suppressWritesRef.current) return
@@ -755,7 +701,7 @@ export default memo(function Terminal({
       // the next drag and re-copied along with it, clobbering the clipboard.
       term.clearSelection()
       if (selText) {
-        copyToClipboard(rawCopy ? selText : reflowSelection(selText))
+        copyToClipboard(rawCopy ? selText : reflowCopy(selText, term.cols))
           .then(() => {
             setCopied(true)
             if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
