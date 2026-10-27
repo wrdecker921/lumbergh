@@ -48,6 +48,18 @@ describe('reflowCopy', () => {
     expect(reflowCopy(text, COLS)).toBe('A quoted sentence that wraps near the end.')
   })
 
+  it('joins a wrap even when the selection starts mid-row, given true row lengths', () => {
+    // The user selected from mid-row: the copied first line is short, but the
+    // RENDERED row ran the full pane width — the buffer row lengths say so.
+    const text = ['did more than the five', '  numbered ones.'].join('\n')
+    expect(reflowCopy(text, COLS, [38, 18])).toBe('did more than the five numbered ones.')
+  })
+
+  it('still honors a genuine short line when the true row length is short too', () => {
+    const text = ['A short deliberate line.', '  numbered ones.'].join('\n')
+    expect(reflowCopy(text, COLS, [24, 18])).toBe('A short deliberate line.\n  numbered ones.')
+  })
+
   it('leaves box-drawing verticals alone — tables are content, not decoration', () => {
     const text = ['│ name │ port │', '│ lb   │ 8420 │'].join('\n')
     expect(reflowCopy(text, COLS)).toBe('│ name │ port │\n│ lb   │ 8420 │')

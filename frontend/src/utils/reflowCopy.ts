@@ -40,7 +40,12 @@ function stripGutter(lines: string[]): string[] {
 // gives mid-sentence line breaks. Reconstruct paragraphs via the word-wrap
 // invariant: row B is a continuation of row A iff B's first word could not
 // have fit on A. Then strip the indent common to every line (the gutter).
-export function reflowCopy(text: string, termCols: number): string {
+// `rowLengths`, when given, holds the TRUE rendered length of each buffer row
+// the selection covers (from term.buffer, trailing blanks trimmed). A
+// selection that starts mid-row copies only a fragment of that row, so the
+// fragment's length says nothing about whether the ROW wrapped — the buffer
+// row's length does. Ignored unless it maps 1:1 onto the copied lines.
+export function reflowCopy(text: string, termCols: number, rowLengths?: number[]): string {
   // Agent TUIs wrap a column or two short of the pane width, and JS string
   // length under-counts ambiguous-width chars (em dashes, curly quotes) by
   // a column each — measured live, wrapped rows end up to ~4 columns shy
@@ -49,7 +54,9 @@ export function reflowCopy(text: string, termCols: number): string {
   const cols = termCols - 4
   const out: string[] = []
   let lastRowLen = 0
-  for (const bare of text.split('\n')) {
+  const lines = text.split('\n')
+  const trueLengths = rowLengths && rowLengths.length === lines.length ? rowLengths : null
+  for (const [i, bare] of lines.entries()) {
     const raw = bare.replace(QUOTE_BAR, '')
     const line = raw.replace(/\s+$/, '')
     const stripped = line.replace(/^\s+/, '')
@@ -64,8 +71,10 @@ export function reflowCopy(text: string, termCols: number): string {
     // paragraph's first line. And it needs the RENDERED length (quote bar
     // included) — the TUI wrapped at screen width, so judging fit on the
     // bar-stripped content would shrink quoted rows by two columns and eat
-    // most of the slack.
-    lastRowLen = bare.replace(/\s+$/, '').length
+    // most of the slack. The buffer row length, when we have it, beats the
+    // copied text for the same reason: a mid-row selection start truncates
+    // the copy, never the row.
+    lastRowLen = Math.max(trueLengths?.[i] ?? 0, bare.replace(/\s+$/, '').length)
   }
   return stripGutter(out).join('\n')
 }

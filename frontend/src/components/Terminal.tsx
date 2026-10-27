@@ -696,12 +696,25 @@ export default memo(function Terminal({
       // reports empty mid-drag, but term.getSelection() (with a DOM-selection
       // fallback) is populated by the time the button is released.
       const selText = term.getSelection() || (window.getSelection()?.toString() ?? '')
+      // True rendered length of every buffer row the selection covers. A
+      // selection that starts mid-row copies a fragment, and the reflow would
+      // misread the short fragment as a deliberate line break — the buffer
+      // knows how long the row really ran. Read BEFORE clearSelection, which
+      // destroys the position.
+      let rowLengths: number[] | undefined
+      const range = term.getSelectionPosition()
+      if (range) {
+        rowLengths = []
+        for (let y = range.start.y; y <= range.end.y; y++) {
+          rowLengths.push(term.buffer.active.getLine(y)?.translateToString(true).length ?? 0)
+        }
+      }
       // Drop the selection once read: our faked shift-clicks mean xterm never
       // clears one on its own, so a stale selection would be shift-EXTENDED by
       // the next drag and re-copied along with it, clobbering the clipboard.
       term.clearSelection()
       if (selText) {
-        copyToClipboard(rawCopy ? selText : reflowCopy(selText, term.cols))
+        copyToClipboard(rawCopy ? selText : reflowCopy(selText, term.cols, rowLengths))
           .then(() => {
             setCopied(true)
             if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
