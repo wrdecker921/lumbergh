@@ -6,12 +6,13 @@
 // wrong.
 
 // Claude Code renders a markdown blockquote as a left-block bar glyph ("▎ …")
-// at the start of every quoted row. Pure decoration, so it must not survive a
-// copy: stripped per physical row BEFORE wrap-joining, or joined rows embed
-// bars mid-sentence ("all 343 automated ▎ tests"). Only the left-block family
-// is stripped — NOT box-drawing │/┃, which appear as real content in tables
-// and tree output.
-const QUOTE_BAR = /^[▏▎▍▌▋] ?/
+// at the start of every quoted row — after the response gutter, so rows
+// arrive as "  ▎ text", not "▎ text". Pure decoration, so it must not survive
+// a copy: stripped per physical row BEFORE wrap-joining (keeping the indent
+// for the dedent pass), or joined rows embed bars mid-sentence ("all 343
+// automated ▎ tests"). Only the left-block family is stripped — NOT
+// box-drawing │/┃, which appear as real content in tables and tree output.
+const QUOTE_BAR = /^(\s*)[▏▎▍▌▋] ?/
 
 // Strip the gutter: the MOST COMMON indent, not the minimum — bullet
 // lines ("● ...") sit at column 0, which would pin a min-based dedent to
@@ -57,7 +58,7 @@ export function reflowCopy(text: string, termCols: number, rowLengths?: number[]
   const lines = text.split('\n')
   const trueLengths = rowLengths && rowLengths.length === lines.length ? rowLengths : null
   for (const [i, bare] of lines.entries()) {
-    const raw = bare.replace(QUOTE_BAR, '')
+    const raw = bare.replace(QUOTE_BAR, '$1')
     const line = raw.replace(/\s+$/, '')
     const stripped = line.replace(/^\s+/, '')
     const firstWord = stripped.split(/\s/, 1)[0] ?? ''

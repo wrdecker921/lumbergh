@@ -41,6 +41,19 @@ describe('reflowCopy', () => {
     )
   })
 
+  it('strips bars on indented quoted rows — the bar follows the gutter, not column 0', () => {
+    // Claude Code indents a blockquote inside a response: rows arrive as
+    // "  ▎ text". The strip must fire after the indent or joins embed bars.
+    const text = [
+      '  ▎ Hi Christina. No ingestion error.', // rendered 37 cols — wrapped
+      '  ▎ The spike was a bug in how we read',
+      '  ▎ the cost curve files.',
+    ].join('\n')
+    expect(reflowCopy(text, COLS)).toBe(
+      'Hi Christina. No ingestion error. The spike was a bug in how we read the cost curve files.'
+    )
+  })
+
   it('judges wrap width by the rendered row, bar included', () => {
     // The quoted row is 38 rendered cols but only 36 after the bar strip;
     // the continuation's first word must still be seen as not fitting.
