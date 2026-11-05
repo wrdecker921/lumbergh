@@ -32,8 +32,9 @@ def detect_tailscale() -> dict | None:
     if not self_node:
         return None
 
-    # TailscaleIPs is a list; grab the first IPv4 address
-    ips = self_node.get("TailscaleIPs", [])
+    # TailscaleIPs is a list — or null while the daemon is stopped or
+    # logging in; grab the first IPv4 address
+    ips = self_node.get("TailscaleIPs") or []
     ip = next((addr for addr in ips if "." in addr), None)
     if not ip:
         return None
